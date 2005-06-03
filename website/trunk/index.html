@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>MTAmark - Marking Mail Transfer Agents in Reverse DNS with TXT RRs</title>
+<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1"/>
+<meta name="description" content="MTAmark - How to mark Mail Transfer Agents in Reverse DNS with TXT RRs"/>
+<meta name="keywords" content="mtamark, reverse dns, spam, mta"/>
+<meta name="robots" content="index,follow"/>
+<link rel="stylesheet" title="MTAmark Standard" href="style-bin/mtamark.css" type="text/css" media="screen"/>
+<link rel="shortcut icon" href="/image-bin/favicon.ico">
+</head>
+
+<body>
+
+<div id="header">
+<div id="titleimg">
+</div>
+<div id="title">
+<h4>Marking Mail Transfer Agents in Reverse DNS with TXT RRs</h4>
+</div>
+</div>
+<div id="content">
+<div class="section">
+<h6>What is it?</h6>
+</div>
+<div class="abstract">
+<p>
+The MTAMark draft was created by Steff Hoehne and Markus Stumpf. In contrast to other more extensive approaches to deal with unsolicited email, commonly called "spam", the MTAMark memo discusses a very simple authentication scheme. It uses marking of hosts in reverse DNS (in-addr.arpa and ip6.arpa zones) to allow the receiving mail transfer agents to decide whether the connecting (sending) host is a designated mail transfer agent (MTA) or not.
+</p>
+<p>
+Despite being a weaker scheme than most of the other proposals currently discussed, it can reduce the amount of spam and viruses/worms significantly and has the advantage that it can be implemented based on existing and well-established Internet technology like DNS without any changes to that technology. 
+</p>
+</div>
+<div class="link">
+The draft is available at
+<ul>
+<li> <a href="http://mtamark.space.net/">SpaceNet</a></li>
+</ul>
+</div>
+<div class="section">
+<h6>Perl implementation</h6>
+</div>
+<div class="link">
+This is the Mail::MTAMark::Query module for Perl
+<ul>
+<li> <a href="http://mtamark.space.net/">SpaceNet</a></li>
+</ul>
+</div>
+</div>
+<div id="footer">
+<a href="http://developer.berlios.de" title="BerliOS Developer"><img src="http://developer.berlios.de/bslogo.php?group_id=3921" width="124" height="32" border="0" alt="Hosted by BerliOS Developer" /></a>
+</div>
+</body>
+</html>
