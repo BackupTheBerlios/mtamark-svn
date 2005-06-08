@@ -69,6 +69,13 @@ use vars qw($VERSION);
 
 $VERSION = '0.001';
 
+use constant RESULT_NONE    => 0;
+use constant RESULT_ERROR   => 1;
+use constant RESULT_UNKNOWN => 2;
+use constant RESULT_FAIL    => 3;
+use constant RESULT_PASS    => 4;
+sub R { qw(none error unknown fail pass)[$_[0]] };
+
 =head1 CONSTRUCTOR
 
 =over
@@ -127,6 +134,11 @@ This can be useful if you want to reuse an existing Resolver object or
 need to do some additional caching/packet mangling or just want to modify
 the default timeouts.
 
+=item debug
+
+Enables debug messages to STDERR if set to a true value.  Also accepts a 
+ref to a debug routine which should accept a list of values.
+
 =item arpa
 
 MTAMark informations are queried either from the in-addr.arpa (IPv4) or 
@@ -140,7 +152,7 @@ sub new {
   my $class = shift;
   $class = ref($class) || $class;
 
-  my %self = (
+  my $self = bless {
     ip   => undef,
     ipv4 => undef,
     ipv6 => undef,
@@ -149,52 +161,76 @@ sub new {
 
     resolver => undef,
     
-    arpa => 'arpa',
+    debug => 0,
+    arpa  => 'arpa',
     
-    QUEUE => [],
-    RP    => 0,
-    
-    RESULT  => 'none',
-    MAILBOX => '',
+    QUEUE  => [ ],
+    RESULT => RESULT_NONE,
+    RPS    => [ ],
+
+    D => sub {},
 
     ERROR => 'Oops',
     NOISY_NET_IP => $Net::IP::VERSION == 1.22,
-  );
-  my %opts = ( @_ );
-  foreach my $opt (keys %opts) {
-    $self{$opt} = $opts{$opt} if exists $self{$opt};
+  } => $class;
+  while (@_) {
+    my ($k, $v) = (shift, shift);
+    $self->{$k} = $v if exists $self->{$k};
+  }
+  
+  # Initialize the debugging stuff.
+  if ($self->{debug}) {
+    $self->{D} = ref $self->{debug} ?
+                 $self->{debug} :
+                 sub {
+                   print STDERR join("\n", @_, '');
+                 };
+    $self->{D}("n: " . __PACKAGE__ . " v$VERSION");
   }
 
-  # Build the initial queue
+  # Build the initial queue.  It will first contain just the keys.
+  # Let's start with the ip option, it will take precedence.
   my @queue = ();
-  if (defined $self{ip}) {
-    my $ips = delete $self{ip}; # We'll use the versionized key instead
+  if (defined $self->{ip}) {
+    my $ips = delete $self->{ip}; # We'll use the versionized key instead
     my $ipo = Net::IP->new($ips)
                 or return (undef, "Invalid ip ($ips): " . Net::IP::Error());
     my $ipv = $ipo->version()
                 or return (undef, "Invalid ip ($ips): " . $ipo->error());
     my $ipk = 'ipv' . $ipv; # Build the versionized key,
-    $self{$ipk} = $ipo;     # set in in the hash (overriding any existing)
-    $queue[0]   = $ipk;     # and push it to the queue so it takes precedence.
+    $self->{$ipk} = $ipo;   # set in in the hash (overriding any existing)
+    push(@queue, $ipk);     # and push it to the queue so it takes precedence.
   }
-  unless ($self{ipv4} || $self{ipv6}) {
+  unless ($self->{ipv4} || $self->{ipv6}) {
     return (undef, "IP required");
   }
-  
+  # Continue with the explicit ipv4/ipv6 options
   foreach my $ipv (qw(4 6)) {
     my $ipk = 'ipv' . $ipv;
-    my $ips = $self{$ipk};
+    my $ips = $self->{$ipk};
     next if not defined $ips
              or ref $ips; # We might have already created an object above
-    $self{$ipk} = Net::IP->new($ips, $ipv)
+    $self->{$ipk} = Net::IP->new($ips, $ipv)
                     or return (undef, "Invalid $ipk ($ips): " . Net::IP::Error());
-    push(@queue, $ipk) unless $queue[0] eq $ipk;
+    push(@queue, $ipk);
   }
   
-  shift(@queue) unless $queue[0];
-  $self{'QUEUE'} = [ @queue ];
+  # The @queue now contains of the keys.  Replace them with array references
+  # containing the query details and remove the elements from the $self hash.
+  foreach my $ipk (@queue) {
+    $ipk = delete $self->{$ipk};
+    $ipk = $self->_reverse_ip($ipk);
+    return (undef, $self->{ERROR}) unless $ipk; # Something went wrong?
+    $ipk = join('.' => qw(_send _smtp _srv), $ipk);
+    $ipk =~ s/arpa\.?$/$self->{arpa}/;
+    $ipk = [ $ipk, 'TXT' ];
+    $self->{D}("n: queued $$ipk[0] IN $$ipk[1]");
+  }
   
-  return bless({ %self }, $class);
+  # That's the final queue.
+  $self->{'QUEUE'} = [ @queue ];
+  
+  return $self;
 }
 
 =back
@@ -220,17 +256,21 @@ sub new {
 sub result {
   my ($self) = @_;
   
-  return $self->{RESULT} unless $self->{RESULT} eq q(none);
-  return $self->{RESULT} unless @{$self->{QUEUE}};
+  my $r = $self->{RESULT};
   
-  my $res;
-  do {
-    $res = $self->process_packet();
-    return q(error) unless defined $res;
+  # Return whatever we have if the queue is empty or if any query was
+  # successful (ie. we've got any result)
+  return R($r) unless @{$self->{QUEUE}};
+  return R($r) unless $r == RESULT_NONE;
+  
+  # Create, send and process pakcets until we've got a result.
+  $r = 42;
+  while ($r) {
+    $r = $self->process_packet();
+    return R(RESULT_ERROR) unless defined $r;
   }
-  while ($res);
   
-  return ($self->{RESULT});
+  return R($self->{RESULT});
 }
 
 
@@ -245,12 +285,6 @@ Returns the error string which was set by the last failed method.
 sub error {
   my $self = shift;
   return $self->{ERROR};
-}
-
-sub _e {
-  my $self = shift;
-  $self->{ERROR} = $_[0];
-  return undef;
 }
 
 =pod
@@ -268,42 +302,15 @@ See also L<"THE FLOW">.
 sub create_packet {
   my $self = shift;
   
-  my $ipk = ${$self->{'QUEUE'}}[0]
-              or return $self->_e("No requests in queue");
+  my $request = ${$self->{'QUEUE'}}[0]
+                  or return $self->_e("No requests in queue");
+  $self->{D}("c: creating packet for $$request[0] IN $$request[1]");
   
-  my $domain = $self->_reverse_ip($ipk) or return undef;
-  $domain = join('.' => qw(_send _smtp _srv), $domain);
-  $domain =~ s/arpa\.?$/$self->{arpa}/;
-
-  my $packet = Net::DNS::Packet->new($domain, $self->{RP} ? 'RP' : 'TXT');
+  my $packet = Net::DNS::Packet->new(@{$request}, 'IN');
   #$packet->push('question', Net::DNS::Question->new($domain, 'RP', 'IN'));
+  #$self->{D}("created packet:", $packet->string());
 
   return $packet;
-}
-
-sub _reverse_ip {
-  my $self = shift;
-  my ($ipk) = @_;
-  
-  my $ipr;
-  my $oldfh = select();
-  local *NULL;
-  
-  if ($self->{NOISY_NET_IP}) {
-    require File::Spec;
-    open(NULL, ">" . File::Spec->devnull())
-      or return $self->_e("Failed to open " . File::Spec->devnull() . " for Net::IP " . $Net::IP::VERSION . " kludge: $!");
-    $oldfh = select(NULL);
-    print __PACKAGE__ . " shut up STDOUT to work around debug output in Net::IP::reverse_ip.\n";
-  }
-  
-  $ipr = $self->{$ipk}->reverse_ip()
-           or return $self->_e("Reverse failed: " . $self->{$ipk}->error());
-  
-  if (select($oldfh) ne $oldfh) {
-    close (NULL);
-  }
-  return $ipr;
 }
 
 =pod
@@ -327,7 +334,8 @@ sub send_packet {
                           tcp_timeout => 30,
                         );
 
-  return $self->{resolver}->send($packet);
+  $self->{D}("s: sending packet");
+  return $self->{resolver}->send($packet) || $self->_e("Something went wrong."); # TODO: Net::DNS::Resolver->errorstring()
 }
 
 =pod
@@ -345,63 +353,87 @@ sub process_packet {
   $packet ||= $self->send_packet();
   return undef unless $packet;
 
+  my $type = ${${$self->{QUEUE}}[0]}[1];
+  $self->{D}("p: looking for answer of type $type, "
+              . "packet has " . $packet->header->ancount() . " answer(s)");
   if ($packet->header->ancount() > 0) {
-    my $type = $self->{RP} ? 'RP' : 'TXT';
     my @answer = $packet->answer();
     while (@answer) {
       last if $answer[0]->type() eq $type;
       shift(@answer);
     }
     if (@answer) {
-      if ($self->{RP}) {
-        $self->{MAILBOX} = $self->_parse_rp($answer[0]);
+      $self->{D}("p: found matching answer");
+      my $data = $answer[0];
+      if ($type eq 'TXT') {
+        $data = $data->rdatastr() || '';
+        $self->{D}("p: got value '$data'");
+        $data =~ /^"\s*([01])\s*"$/;
+        $self->{RESULT} = $1 ? (RESULT_FAIL, RESULT_PASS)[$1] : RESULT_UNKNOWN;
       }
       else {
-        $self->{RESULT}  = $self->_parse_txt($answer[0]);
+        $data = $data->mbox() || '';
+        $self->{D}("p: got values '$data'/'" . $data->txtdname() . "'");
+        $data =~ s/(?<!\\)\./@/;
+        $data =~ s/\\\././g;
+        $data =~ s/^\@$//;
+        push(@{$self->{RPS}}, [ $data, '' ]) if $data;
       }
     }
   }
   
-  if ($self->{RP} or not $self->{query_rp}) {
-    shift(@{$self->{QUEUE}});
-    $self->{RP} = 0;
-    return 0 if $self->{RESULT};
-    return 0 unless @{$self->{QUEUE}};
-    return 1;
-  }
-  else {
-    $self->{RP} = 1;
-    return 2;
+  if ($type eq 'TXT' and $self->{query_rp} and $self->{RESULT} >= RESULT_FAIL) {
+    $self->{D}("p: result is $self->{RESULT}, queueing RP query");
+    ${${$self->{QUEUE}}[0]}[1] = 'RP';
+    return 42;
   }
   
-  return $self->_e("Must not happen");
+  $self->{D}("p: shifting queue");
+  shift(@{$self->{QUEUE}});
+  return 0 if $self->{RESULT} >= RESULT_FAIL;
+  return 0 unless @{$self->{QUEUE}};
+  $self->{D}("p: next in queue");
+  return 64;
 }
 
-sub _parse_txt {
+=back
+
+=cut
+
+sub _e {
   my $self = shift;
-  my ($data) = @_;
-  
-  $data = $data->rdatastr();
-  $data =~ /^"\s*([01])\s*"$/;
-  return q(unknown) unless $1;
-  return qw(fail pass)[$1];
+  $self->{ERROR} = $_[0];
+  return undef;
 }
 
-sub _parse_rp {
+sub _reverse_ip {
   my $self = shift;
-  my ($data) = @_;
+  my ($ipk) = @_;
   
-  $data = $data->mbox() || '';
-  $data =~ s/(?<!\\)\./@/;
-  $data =~ s/\\\././g;
-  return $data;
+  my $ipr;
+  my $oldfh = select();
+  local *NULL;
+  
+  if ($self->{NOISY_NET_IP}) {
+    $self->{D}("noisy Net::IP v" . $Net::IP::VERSION . " detected, shutting up");
+    require File::Spec;
+    open(NULL, ">" . File::Spec->devnull())
+      or return $self->_e("Failed to open " . File::Spec->devnull() . " for Net::IP " . $Net::IP::VERSION . " kludge: $!");
+    $oldfh = select(NULL);
+    print __PACKAGE__ . " shut up STDOUT to work around debug output in Net::IP::reverse_ip.\n";
+  }
+  
+  $ipr = $ipk->reverse_ip()
+           or return $self->_e("Reverse failed: " . $ipk->error());
+  
+  if (select($oldfh) ne $oldfh) {
+    close (NULL);
+  }
+  return $ipr;
 }
-
 
 1; # We are so true.
 __END__
-
-=back
 
 =head1 THE PROTOCOL
 
