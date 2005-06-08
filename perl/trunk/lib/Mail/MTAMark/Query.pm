@@ -91,24 +91,11 @@ Available options:
 
 =over
 
-=cut
-
-sub new {
-  my $class = shift;
-  $class = ref($class) || $class;
-  
-  my %self = (
-=pod
-  
 =item ip
 
 The IP to be queried.  The value must be a valid IPv4 or IPv6 address; the
 IP version is automagically determined and the correct zone (in-addr.arpa
 vs. ip6.arpa) will be used.
-
-=cut
-    ip   => undef,
-=pod
 
 =item ipv4/ipv6
 
@@ -120,12 +107,6 @@ In the latter case, first the IPv4 one is queried and if there isn't any
 information available, the query will continue with the IPv6 one.  The 
 order in which the addresses are queried might change one day.
 
-=cut
-    ipv4 => undef,
-    ipv6 => undef,
-
-=pod
-
 =item query_rp
 
 The MTAMark specification suggests that the RP (Responsible Person) 
@@ -133,11 +114,6 @@ information is retrieved for any MTAMark enabled IP.  If such information
 is available, it will be returned by the C<result> method.  This boolean
 value enables or disables this query.  The default is enabled which might
 change at some point in the future.
-
-=cut
-    query_rp => 1,
-    
-=pod
 
 =item resolver
 
@@ -151,10 +127,6 @@ This can be useful if you want to reuse an existing Resolver object or
 need to do some additional caching/packet mangling or just want to modify
 the default timeouts.
 
-=cut
-    resolver => undef,
-=pod
-
 =item arpa
 
 MTAMark informations are queried either from the in-addr.arpa (IPv4) or 
@@ -163,6 +135,20 @@ the ip6.arpa (IPv6) zone.  With this option it is possible to replace the
 L<"THE PROTOCOL">.
 
 =cut
+
+sub new {
+  my $class = shift;
+  $class = ref($class) || $class;
+
+  my %self = (
+    ip   => undef,
+    ipv4 => undef,
+    ipv6 => undef,
+    
+    query_rp => 1,
+
+    resolver => undef,
+    
     arpa => 'arpa',
     
     QUEUE => [],
@@ -179,16 +165,17 @@ L<"THE PROTOCOL">.
     $self{$opt} = $opts{$opt} if exists $self{$opt};
   }
 
-  my @queue = ('');
+  # Build the initial queue
+  my @queue = ();
   if (defined $self{ip}) {
-    my $ips = delete $self{ip};
+    my $ips = delete $self{ip}; # We'll use the versionized key instead
     my $ipo = Net::IP->new($ips)
                 or return (undef, "Invalid ip ($ips): " . Net::IP::Error());
     my $ipv = $ipo->version()
                 or return (undef, "Invalid ip ($ips): " . $ipo->error());
-    my $ipk = 'ipv' . $ipv;
-    $self{$ipk} = $ipo;
-    $queue[0]   = $ipk;
+    my $ipk = 'ipv' . $ipv; # Build the versionized key,
+    $self{$ipk} = $ipo;     # set in in the hash (overriding any existing)
+    $queue[0]   = $ipk;     # and push it to the queue so it takes precedence.
   }
   unless ($self{ipv4} || $self{ipv6}) {
     return (undef, "IP required");
@@ -197,7 +184,8 @@ L<"THE PROTOCOL">.
   foreach my $ipv (qw(4 6)) {
     my $ipk = 'ipv' . $ipv;
     my $ips = $self{$ipk};
-    next if not defined $ips or ref $ips;
+    next if not defined $ips
+             or ref $ips; # We might have already created an object above
     $self{$ipk} = Net::IP->new($ips, $ipv)
                     or return (undef, "Invalid $ipk ($ips): " . Net::IP::Error());
     push(@queue, $ipk) unless $queue[0] eq $ipk;
